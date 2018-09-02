@@ -100,6 +100,26 @@
                             </fieldset>
 
                             <fieldset>
+                                <legend>Music Database</legend>
+                                <small>Changing this value will drop your database and perform a full re-scan.</small>
+                                <fieldset>
+                                    <div class="row checkbox left clearfix nopad">
+                                        <label title="MusicBrainz">
+                                            <input type="radio" name="music_db" id="music_db0" value="0" ${config['music_db_0']}>
+                                            MusicBrainz
+                                        </label>
+                                    </div>
+                                    <div class="row checkbox left clearfix nopad">
+                                        <label title="Discogs">
+                                            <input type="radio" name="music_db" id="music_db1" value="1" ${config['music_db_1']}>
+                                            Discogs
+                                        </label>
+                                    </div>
+                                </fieldset>
+
+                            </fieldset>
+
+                            <fieldset>
                                 <legend>Interval</legend>
                                 <small>An interval of 0 will disable a task.</small>
                                 <div class="row">

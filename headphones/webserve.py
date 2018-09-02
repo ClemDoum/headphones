@@ -15,25 +15,26 @@
 
 # NZBGet support added by CurlyMo <curlymoo1@gmail.com> as a part of XBian - XBMC on the Raspberry Pi
 
-from operator import itemgetter
-import threading
-import hashlib
-import random
-import urllib
-import json
-import time
 import cgi
-import sys
-import urllib2
-
+import hashlib
+import json
 import os
+import random
 import re
-from headphones import logger, searcher, db, importer, mb, lastfm, librarysync, helpers, notifiers, crier, discogs
-from headphones.helpers import checked, radio, today, clean_name
-from mako.lookup import TemplateLookup
-from mako import exceptions
-import headphones
+import sys
+import threading
+import time
+import urllib
+import urllib2
+from operator import itemgetter
+
 import cherrypy
+from mako import exceptions
+from mako.lookup import TemplateLookup
+
+import headphones
+from headphones import crier, db, discogs, helpers, importer, lastfm, librarysync, logger, mb, notifiers, searcher
+from headphones.helpers import checked, clean_name, radio, today
 
 try:
     # pylint:disable=E0611
@@ -59,6 +60,13 @@ def serve_template(templatename, **kwargs):
 
 
 class WebInterface(object):
+    @property
+    def music_db(self):
+        if headphones.CONFIG.MUSIC_DB == 0:
+            return mb
+        else:
+            return discogs
+    
     @cherrypy.expose
     def index(self):
         raise cherrypy.HTTPRedirect("home")
@@ -152,11 +160,11 @@ class WebInterface(object):
         if len(name) == 0:
             raise cherrypy.HTTPRedirect("home")
         if type == 'artist':
-            searchresults = mb.findArtist(name, limit=100)
+            searchresults = self.music_db.findArtist(name, limit=100)
         elif type == 'album':
-            searchresults = mb.findRelease(name, limit=100)
+            searchresults = self.music_db.findRelease(name, limit=100)
         elif type == 'series':
-            searchresults = mb.findSeries(name, limit=100)
+            searchresults = self.music_db.findSeries(name, limit=100)
         else:
             searchresults = discogs.findArtist(name, limit=100)
         return serve_template(templatename="searchresults.html",
@@ -743,7 +751,7 @@ class WebInterface(object):
                 original_clean = helpers.clean_name(
                     albums['ArtistName'] + " " + albums['AlbumTitle'] + " " + albums['TrackTitle'])
                 if albums['Matched'] == "Ignored" or albums['Matched'] == "Manual" or albums[
-                        'CleanName'] != original_clean:
+                    'CleanName'] != original_clean:
                     if albums['Matched'] == "Ignored":
                         album_status = "Ignored"
                     elif albums['Matched'] == "Manual" or albums['CleanName'] != original_clean:
@@ -1158,6 +1166,8 @@ class WebInterface(object):
             "https_key": headphones.CONFIG.HTTPS_KEY,
             "api_enabled": checked(headphones.CONFIG.API_ENABLED),
             "api_key": headphones.CONFIG.API_KEY,
+            "music_db_0":  radio(headphones.CONFIG.MUSIC_DB, 0),
+            "music_db_1": radio(headphones.CONFIG.MUSIC_DB, 1),
             "download_scan_interval": headphones.CONFIG.DOWNLOAD_SCAN_INTERVAL,
             "update_db_interval": headphones.CONFIG.UPDATE_DB_INTERVAL,
             "mb_ignore_age": headphones.CONFIG.MB_IGNORE_AGE,
@@ -1573,7 +1583,12 @@ class WebInterface(object):
         headphones.CONFIG.clear_extra_newznabs()
         headphones.CONFIG.clear_extra_torznabs()
 
+        previous_music_db = unicode(headphones.CONFIG.MUSIC_DB)
         headphones.CONFIG.process_kwargs(kwargs)
+
+        if previous_music_db != headphones.CONFIG.MUSIC_DB:
+            logger.info("Music database has change. Purging DB...")
+            # TODO: purge the database
 
         for extra_newznab in extra_newznabs:
             headphones.CONFIG.add_extra_newznab(extra_newznab)

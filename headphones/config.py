@@ -171,6 +171,7 @@ _CONFIG_DEFINITIONS = {
     'MIRROR': (str, 'General', 'musicbrainz.org'),
     'MOVE_FILES': (int, 'General', 0),
     'MPC_ENABLED': (bool_int, 'MPC', False),
+    'MUSIC_DB': (int, 'General', 0),
     'MUSIC_DIR': (path, 'General', ''),
     'MUSIC_ENCODER': (int, 'General', 0),
     'NEWZNAB': (int, 'Newznab', 0),
@@ -332,6 +333,7 @@ class Config(object):
             self.check_setting(key)
         self.ENCODER_MULTICORE_COUNT = max(0, self.ENCODER_MULTICORE_COUNT)
         self._upgrade()
+        self
 
     def _define(self, name):
         key = name.upper()
