@@ -251,6 +251,13 @@ small,
 .config .embed-option-block {
   margin-left: 1em;
 }
+img.albumArt.discogs #{
+  float: left;
+  min-height: 100%;
+  max-width: 250px;
+  max-height: 300px;
+  position: relative;
+}
 img.albumArt {
   float: left;
   min-height: 100%;
@@ -1317,6 +1324,15 @@ div#artistheader h2 a {
 }
 #searchresults_table #artistImg {
   background: url("../images/loader_black.gif") no-repeat scroll center center #FFFFFF;
+  border: 3px solid #FFFFFF;
+  box-shadow: 1px 1px 2px 0 #555555;
+  float: left;
+  height: 50px;
+  overflow: hidden;
+  text-indent: -3000px;
+  width: 50px;
+}
+#searchresults_table #artistDiscogsImg {
   border: 3px solid #FFFFFF;
   box-shadow: 1px 1px 2px 0 #555555;
   float: left;

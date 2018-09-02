@@ -28,7 +28,7 @@ import urllib2
 
 import os
 import re
-from headphones import logger, searcher, db, importer, mb, lastfm, librarysync, helpers, notifiers, crier
+from headphones import logger, searcher, db, importer, mb, lastfm, librarysync, helpers, notifiers, crier, discogs
 from headphones.helpers import checked, radio, today, clean_name
 from mako.lookup import TemplateLookup
 from mako import exceptions
@@ -155,8 +155,10 @@ class WebInterface(object):
             searchresults = mb.findArtist(name, limit=100)
         elif type == 'album':
             searchresults = mb.findRelease(name, limit=100)
-        else:
+        elif type == 'series':
             searchresults = mb.findSeries(name, limit=100)
+        else:
+            searchresults = discogs.findArtist(name, limit=100)
         return serve_template(templatename="searchresults.html",
                               title='Search Results for: "' + cgi.escape(name) + '"',
                               searchresults=searchresults, name=cgi.escape(name), type=type)
@@ -1592,6 +1594,7 @@ class WebInterface(object):
 
         # Reconfigure musicbrainz database connection with the new values
         mb.startmb()
+        discogs.start_discogs()
 
         raise cherrypy.HTTPRedirect("config")
 

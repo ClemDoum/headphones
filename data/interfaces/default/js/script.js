@@ -67,7 +67,7 @@ function getInfo(elem,id,type) {
 	});
 }
 
-function getImageLinks(elem,id,type,unveil) {
+function getImageLinks(elem,id,type,unveil,source) {
 	if ( type == 'artist' ) {
 		var infoURL = "getImageLinks?ArtistID=" + id;
 	} else {

@@ -82,6 +82,7 @@ _CONFIG_DEFINITIONS = {
     'DELUGE_PAUSED': (int, 'Deluge', 0),
     'DESTINATION_DIR': (str, 'General', ''),
     'DETECT_BITRATE': (int, 'General', 0),
+    'DISCOGS_TOKEN': (str, 'Discogs', ''),
     'DO_NOT_PROCESS_UNMATCHED': (int, 'General', 0),
     'DOWNLOAD_DIR': (path, 'General', ''),
     'DOWNLOAD_SCAN_INTERVAL': (int, 'General', 5),

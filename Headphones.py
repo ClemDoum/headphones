@@ -167,6 +167,7 @@ def main():
 
     # Configure the connection to the musicbrainz database
     headphones.mb.startmb()
+    headphones.discogs.start_discogs()
 
     # Force the http port if neccessary
     if args.port:
