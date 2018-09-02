@@ -19,9 +19,9 @@
 
 from __future__ import with_statement
 
+import os
 import sqlite3
 
-import os
 import headphones
 from headphones import logger
 
@@ -101,11 +101,16 @@ class DBConnection:
 
         if self.connection.total_changes == changesBefore:
             insert_query = (
-                "INSERT INTO " + tableName + " (" + ", ".join(
-                    valueDict.keys() + keyDict.keys()) + ")" +
-                " VALUES (" + ", ".join(["?"] * len(valueDict.keys() + keyDict.keys())) + ")"
+                    "INSERT INTO " + tableName + " (" + ", ".join(
+                valueDict.keys() + keyDict.keys()) + ")" +
+                    " VALUES (" + ", ".join(["?"] * len(valueDict.keys() + keyDict.keys())) + ")"
             )
             try:
                 self.action(insert_query, valueDict.values() + keyDict.values())
             except sqlite3.IntegrityError:
                 logger.info('Queries failed: %s and %s', update_query, insert_query)
+
+    def delete(self, table_name):
+        query = "DELETE FROM " + table_name
+        self.action(query)
+

@@ -66,7 +66,7 @@ class WebInterface(object):
             return mb
         else:
             return discogs
-    
+
     @cherrypy.expose
     def index(self):
         raise cherrypy.HTTPRedirect("home")
@@ -1166,7 +1166,7 @@ class WebInterface(object):
             "https_key": headphones.CONFIG.HTTPS_KEY,
             "api_enabled": checked(headphones.CONFIG.API_ENABLED),
             "api_key": headphones.CONFIG.API_KEY,
-            "music_db_0":  radio(headphones.CONFIG.MUSIC_DB, 0),
+            "music_db_0": radio(headphones.CONFIG.MUSIC_DB, 0),
             "music_db_1": radio(headphones.CONFIG.MUSIC_DB, 1),
             "download_scan_interval": headphones.CONFIG.DOWNLOAD_SCAN_INTERVAL,
             "update_db_interval": headphones.CONFIG.UPDATE_DB_INTERVAL,
@@ -1587,8 +1587,25 @@ class WebInterface(object):
         headphones.CONFIG.process_kwargs(kwargs)
 
         if previous_music_db != headphones.CONFIG.MUSIC_DB:
+            purgeable_tables = {
+                "albums",
+                "allalbums",
+                "alltracks",
+                "artists",
+                "blacklist",
+                "descriptions",
+                "have",
+                "lastfmcloud",
+                "newartists",
+                "releases",
+                "snatched",
+                "tracks"
+            }
             logger.info("Music database has change. Purging DB...")
-            # TODO: purge the database
+            my_db = db.DBConnection()
+            for table in purgeable_tables:
+                logger.info("Deleting %s table" % table)
+                my_db.delete(table)
 
         for extra_newznab in extra_newznabs:
             headphones.CONFIG.add_extra_newznab(extra_newznab)
