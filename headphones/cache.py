@@ -17,6 +17,7 @@ import os
 
 import headphones
 from headphones import db, helpers, logger, lastfm, request, mb
+from headphones.discogs import DISCOGS_CLIENT
 
 LASTFM_API_KEY = "690e1ed3bc00bc91804cd8f7fe5ed6d4"
 
@@ -287,40 +288,59 @@ class Cache(object):
         # Since lastfm uses release ids rather than release group ids for albums, we have to do a artist + album search for albums
         # Exception is when adding albums manually, then we should use release id
         if self.id_type == 'artist':
+            if headphones.CONFIG.MUSIC_DB == 0:
+                data = lastfm.request_lastfm("artist.getinfo", mbid=self.id, api_key=LASTFM_API_KEY)
 
-            data = lastfm.request_lastfm("artist.getinfo", mbid=self.id, api_key=LASTFM_API_KEY)
+                # Try with name if not found
+                if not data:
+                    dbartist = myDB.action('SELECT ArtistName, Type FROM artists WHERE ArtistID=?', [self.id]).fetchone()
+                    if dbartist:
+                        data = lastfm.request_lastfm("artist.getinfo",
+                                                     artist=helpers.clean_musicbrainz_name(dbartist['ArtistName']),
+                                                     api_key=LASTFM_API_KEY)
 
-            # Try with name if not found
-            if not data:
-                dbartist = myDB.action('SELECT ArtistName, Type FROM artists WHERE ArtistID=?', [self.id]).fetchone()
-                if dbartist:
-                    data = lastfm.request_lastfm("artist.getinfo",
-                                                 artist=helpers.clean_musicbrainz_name(dbartist['ArtistName']),
-                                                 api_key=LASTFM_API_KEY)
+                if not data:
+                    return
 
-            if not data:
-                return
+                try:
+                    self.info_summary = data['artist']['bio']['summary']
+                except KeyError:
+                    logger.debug('No artist bio summary found')
+                    self.info_summary = None
+                try:
+                    self.info_content = data['artist']['bio']['content']
+                except KeyError:
+                    logger.debug('No artist bio found')
+                    self.info_content = None
+                try:
+                    image_url = data['artist']['image'][-1]['#text']
+                except KeyError:
+                    logger.debug('No artist image found')
+                    image_url = None
 
-            try:
-                self.info_summary = data['artist']['bio']['summary']
-            except KeyError:
-                logger.debug('No artist bio summary found')
+                thumb_url = self._get_thumb_url(data)
+                if not thumb_url:
+                    logger.debug('No artist thumbnail image found')
+            else:
+                artist = DISCOGS_CLIENT.artist(self.id)
                 self.info_summary = None
-            try:
-                self.info_content = data['artist']['bio']['content']
-            except KeyError:
-                logger.debug('No artist bio found')
-                self.info_content = None
-            try:
-                image_url = data['artist']['image'][-1]['#text']
-            except KeyError:
-                logger.debug('No artist image found')
+                if not artist.profile:
+                    logger.debug("No profile found")
+                self.info_content = artist.profile
                 image_url = None
-
-            thumb_url = self._get_thumb_url(data)
-            if not thumb_url:
-                logger.debug('No artist thumbnail image found')
-
+                thumb_url = None
+                if artist.images:
+                    best_image = artist.images[0]
+                    for im in artist.images:
+                        if im["type"] == "primary":
+                            best_image = im
+                            break
+                    image_url = best_image["uri"]
+                    thumb_url = best_image["uri150"]
+                if not thumb_url:
+                    logger.debug("No thumb url found")
+                if not image_url:
+                    logger.debug("No image url found")
         else:
             dbalbum = myDB.action(
                 'SELECT ArtistName, AlbumTitle, ReleaseID, Type FROM albums WHERE AlbumID=?',

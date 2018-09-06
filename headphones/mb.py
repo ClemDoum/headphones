@@ -490,7 +490,8 @@ def getRelease(releaseid, include_artist_info=True):
     return release
 
 
-def get_new_releases(rgid, includeExtras=False, forcefull=False):
+def get_new_releases(release_group, includeExtras=False, forcefull=False):
+    rgid = release_group['id']
     myDB = db.DBConnection()
     results = []
 
@@ -793,3 +794,134 @@ def getArtistForReleaseGroup(rgid):
         return False
     else:
         return releaseGroup['artist-credit'][0]['artist']['name']
+
+
+
+def build_hybrid_release(release_group, db):
+    # This will be used later to build a hybrid release
+    fullreleaselist = []
+    # Search for releases within a release group
+    find_hybrid_releases = db.action("SELECT * from allalbums WHERE AlbumID=?",
+                                     [release_group['id']])
+
+    # Build the dictionary for the fullreleaselist
+    for items in find_hybrid_releases:
+        # don't include hybrid information, since that's what we're replacing
+        # Hybrid release = master => we build master release
+        if items['ReleaseID'] != release_group['id']:
+            hybrid_release_id = items['ReleaseID']
+            newValueDict = {"ArtistID": items['ArtistID'],
+                            "ArtistName": items['ArtistName'],
+                            "AlbumTitle": items['AlbumTitle'],
+                            "AlbumID": items['AlbumID'],
+                            "AlbumASIN": items['AlbumASIN'],
+                            "ReleaseDate": items['ReleaseDate'],
+                            "Type": items['Type'],
+                            "ReleaseCountry": items['ReleaseCountry'],
+                            "ReleaseFormat": items['ReleaseFormat']
+                            }
+            find_hybrid_tracks = db.action("SELECT * from alltracks WHERE ReleaseID=?",
+                                           [hybrid_release_id])
+            totalTracks = 1
+            hybrid_track_array = []
+            for hybrid_tracks in find_hybrid_tracks:
+                hybrid_track_array.append({
+                    'number': hybrid_tracks['TrackNumber'],
+                    'title': hybrid_tracks['TrackTitle'],
+                    'id': hybrid_tracks['TrackID'],
+                    # 'url':           hybrid_tracks['TrackURL'],
+                    'duration': hybrid_tracks['TrackDuration']
+                })
+                totalTracks += 1
+            newValueDict['ReleaseID'] = hybrid_release_id
+            newValueDict['Tracks'] = hybrid_track_array
+            fullreleaselist.append(newValueDict)
+
+
+    hybridrelease = build_release_with_best_tracklist(fullreleaselist)
+    return hybridrelease
+
+def build_release_with_best_tracklist(releases):
+    """
+    Returns a dictionary of best group of tracks from the list of releases and
+    earliest release date
+    """
+
+    if len(releases) == 0:
+        raise ValueError("Empty fullreleaselist")
+
+    sortable_release_list = []
+
+    formats = {
+        '2xVinyl': '2',
+        'Vinyl': '2',
+        'CD': '0',
+        'Cassette': '3',
+        '2xCD': '1',
+        'Digital Media': '0'
+    }
+
+    countries = {
+        'US': '0',
+        'GB': '1',
+        'JP': '2',
+    }
+
+    for release in releases:
+        # Find values for format and country
+        try:
+            format = int(formats[release['Format']])
+        except (ValueError, KeyError):
+            format = 3
+
+        try:
+            country = int(countries[release['Country']])
+        except (ValueError, KeyError):
+            country = 3
+
+        # Create record
+        release_dict = {
+            'hasasin': bool(release['AlbumASIN']),
+            'asin': release['AlbumASIN'],
+            'trackscount': len(release['Tracks']),
+            'releaseid': release['ReleaseID'],
+            'releasedate': release['ReleaseDate'],
+            'format': format,
+            'country': country,
+            'tracks': release['Tracks']
+        }
+
+        sortable_release_list.append(release_dict)
+
+    # Necessary to make dates that miss the month and/or day show up after full
+    # dates
+    def getSortableReleaseDate(releaseDate):
+        # Change this value to change the sorting behaviour of none, returning
+        # 'None' will put it at the top which was normal behaviour for pre-ngs
+        # versions
+        if releaseDate is None:
+            return 'None'
+
+        if releaseDate.count('-') == 2:
+            return releaseDate
+        elif releaseDate.count('-') == 1:
+            return releaseDate + '32'
+        else:
+            return releaseDate + '13-32'
+
+    sortable_release_list.sort(key=lambda x: getSortableReleaseDate(x['releasedate']))
+
+    average_tracks = sum(x['trackscount'] for x in sortable_release_list) / float(
+        len(sortable_release_list))
+    for item in sortable_release_list:
+        item['trackscount_delta'] = abs(average_tracks - item['trackscount'])
+
+    a = helpers.multikeysort(sortable_release_list,
+                             ['-hasasin', 'country', 'format', 'trackscount_delta'])
+
+    release_dict = {'ReleaseDate': sortable_release_list[0]['releasedate'],
+                    'Tracks': a[0]['tracks'],
+                    'AlbumASIN': a[0]['asin']
+                    }
+
+    return release_dict

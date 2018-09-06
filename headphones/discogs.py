@@ -12,9 +12,11 @@
 #
 #  You should have received a copy of the GNU General Public License
 #  along with Headphones.  If not, see <http://www.gnu.org/licenses/>.
-
+import hashlib
 
 import discogs_client
+from Levenshtein import ratio
+from discogs_client import Master
 from discogs_client.exceptions import HTTPError
 
 import headphones
@@ -40,6 +42,7 @@ def start_discogs():
     global DISCOGS_CLIENT
     discogs_token = headphones.CONFIG.DISCOGS_TOKEN
     DISCOGS_CLIENT = discogs_client.Client(agent, user_token=discogs_token)
+    discogs_lock.minimum_delta = 1
 
 
 def findArtist(name, limit=1):
@@ -48,41 +51,48 @@ def findArtist(name, limit=1):
 
     with discogs_lock:
         artist_results = DISCOGS_CLIENT.search(name, **criteria)
+        artist_results._per_page = 100
 
-    if artist_results.count == 0:
-        return False
-    num_res = artist_results.count
-    for i, artist in enumerate(artist_results):
-        if limit == 1 and artist.name.lower() != name.lower():
-            logger.info('Ambiguous artists name: %s - doing an album based search' % name)
-            artistdict = findArtistbyAlbum(name)
-            if not artistdict:
-                logger.info(
-                    'Cannot determine the best match from an artist/album search. Using top match instead')
-                artist_list.append({
-                    # Just need the artist id if the limit is 1
-                    'id': artist.id,
-                })
-            else:
-                artist_list.append(artistdict)
-        else:
-            score = int((num_res - i ) / num_res * 100)
-            image_url = "interfaces/default/images/icon_mic.png"
+    current_res = 0
+    page_it = (artist_results.page(i) for i in range(1, artist_results.pages + 1))
+    while True:  # TODO: create an helper to create iterators with locks
+        with discogs_lock:
             try:
-                if artist.images:
-                    image_url = artist.images[0]['uri']
-            except HTTPError:
-                pass
+                page = next(page_it)
+            except StopIteration:
+                break
+        for artist in page:
+            if limit == 1 and artist.name.lower() != name.lower():
+                logger.info('Ambiguous artists name: %s - doing an album based search' % name)
+                artistdict = findArtistbyAlbum(name)
+                if not artistdict:
+                    logger.info(
+                        'Cannot determine the best match from an artist/album search. Using top match instead')
+                    artist_list.append({
+                        # Just need the artist id if the limit is 1
+                        'id': artist.id,
+                    })
+                else:
+                    artist_list.append(artistdict)
+            else:
+                score = ratio(artist.name, name)
+                image_url = "interfaces/default/images/icon_mic.png"
+                try:
+                    if artist.images:
+                        image_url = artist.images[0]['uri']
+                except HTTPError:
+                    pass
 
-            artist_list.append({
-                'name': artist.name,
-                'uniquename': artist.name,
-                'id': unicode(artist.id),
-                'url': artist.data['uri'],
-                'image_url': image_url,
-                # probably needs to be changed
-                'score': score
-            })
+                artist_list.append({
+                    'name': artist.name,
+                    'uniquename': artist.name,
+                    'id': unicode(artist.id),
+                    'url': artist.data['uri'],
+                    'image_url': image_url,
+                    # probably needs to be changed
+                    'score': score
+                })
+                current_res += 1
     return artist_list
 
 
@@ -198,109 +208,75 @@ def findSeries(name, limit=1):
 
 
 def getArtist(artistid, extrasonly=False):
+    # The extrasonly flag is ignore since the Discogs API does not seem to have
+    # this notion
+    logger.info("Retrieving info for '%s' in discogs music database", artistid)
     artist_dict = {}
-    artist = None
-    try:
-        limit = 100
-        with discogs_lock:
-            artist = musicbrainzngs.get_artist_by_id(artistid)['artist']
-        newRgs = None
-        artist['release-group-list'] = []
-        while newRgs is None or len(newRgs) >= limit:
-            with discogs_lock:
-                newRgs = musicbrainzngs.browse_release_groups(
-                    artistid,
-                    release_type="album",
-                    offset=len(artist['release-group-list']),
-                    limit=limit)
-            newRgs = newRgs['release-group-list']
-            artist['release-group-list'] += newRgs
-    except musicbrainzngs.WebServiceError as e:
-        logger.warn(
-            'Attempt to retrieve artist information from MusicBrainz failed for artistid: %s (%s)' % (
-                artistid, str(e)))
-        discogs_lock.snooze(5)
-    except Exception as e:
-        pass
+
+    with discogs_lock:
+        artist = DISCOGS_CLIENT.artist(artistid)
 
     if not artist:
+        logger.info("Cloudn't find artist with ID '%s' on Discogs", artistid)
         return False
 
-    artist_dict['artist_name'] = unicode(artist['name'])
+    artist_dict['artist_name'] = artist.name
+
+    # For discogs we always include extra
+    all_releases = []
+    artist.releases._per_page = 100
+    pages_it = (artist.releases.page(i) for i in range(1, artist.releases.pages + 1))
+    while True:
+        with discogs_lock:
+            try:
+                page = next(pages_it)
+            except StopIteration:
+                break
+        all_releases += page
+
+    # First add main releases of master releases
+    displayed_releases = []
+    masters = [v for v in all_releases if isinstance(v, Master)]
+    for m in masters:
+        release_group = {
+            "master": m,
+            "main_release_id": m.data["main_release"]
+        }
+        m.versions._per_page = 100
+        version_pages_it = (m.versions.page(i) for i in range(1, m.versions.pages + 1))
+        while True:
+            with discogs_lock:
+                try:
+                    page = next(version_pages_it)
+                    release_group["versions"] = {v.id: v for v in page}
+                except StopIteration:
+                    break
+                displayed_releases.append(release_group)
+    # Then add releases that where not in master versions
+    seen_versions = set(rid for rg in displayed_releases for rid in rg["versions"])
+    releases_with_no_master = [v for v in all_releases if not isinstance(v, Master)
+                               and v.id not in seen_versions if v.status == u"Accepted"]
+    # For release with no master we take them as their own master and them as the single version
+    for release in releases_with_no_master:
+        release_group = {
+            "master": release,
+            "versions": {release.id: release},
+            "main_release_id": release.id
+        }
+        displayed_releases.append(release_group)
 
     releasegroups = []
-
-    if not extrasonly:
-        for rg in artist['release-group-list']:
-            if "secondary-type-list" in rg.keys():  # only add releases without a secondary type
-                continue
-            releasegroups.append({
-                'title': unicode(rg['title']),
-                'id': unicode(rg['id']),
-                'url': u"http://musicbrainz.org/release-group/" + rg['id'],
-                'type': unicode(rg['type'])
-            })
-
-    # See if we need to grab extras. Artist specific extras take precedence over global option
-    # Global options are set when adding a new artist
-    myDB = db.DBConnection()
-
-    try:
-        db_artist = myDB.action('SELECT IncludeExtras, Extras from artists WHERE ArtistID=?',
-                                [artistid]).fetchone()
-        includeExtras = db_artist['IncludeExtras']
-    except IndexError:
-        includeExtras = False
-
-    if includeExtras:
-
-        # Need to convert extras string from something like '2,5.6' to ['ep','live','remix'] (append new extras to end)
-        if db_artist['Extras']:
-            extras = map(int, db_artist['Extras'].split(','))
-        else:
-            extras = []
-        extras_list = headphones.POSSIBLE_EXTRAS
-
-        includes = []
-
-        i = 1
-        for extra in extras_list:
-            if i in extras:
-                includes.append(extra)
-            i += 1
-
-        for include in includes:
-
-            mb_extras_list = []
-
-            try:
-                limit = 100
-                newRgs = None
-                while newRgs is None or len(newRgs) >= limit:
-                    with discogs_lock:
-                        newRgs = musicbrainzngs.browse_release_groups(
-                            artistid, release_type=include, offset=len(mb_extras_list), limit=limit)
-                    newRgs = newRgs['release-group-list']
-                    mb_extras_list += newRgs
-            except musicbrainzngs.WebServiceError as e:
-                logger.warn(
-                    'Attempt to retrieve artist information from MusicBrainz failed for artistid: %s (%s)' % (
-                        artistid, str(e)))
-                discogs_lock.snooze(5)
-
-            for rg in mb_extras_list:
-                rg_type = rg['type']
-                if rg_type == 'Album' and 'secondary-type-list' in rg:
-                    secondary_type = rg['secondary-type-list'][0]
-                    if secondary_type != rg_type:
-                        rg_type = secondary_type
-
-                releasegroups.append({
-                    'title': unicode(rg['title']),
-                    'id': unicode(rg['id']),
-                    'url': u"http://musicbrainz.org/release-group/" + rg['id'],
-                    'type': unicode(rg_type)
-                })
+    for release in displayed_releases:
+        formats = [v.data["format"] for v in release["versions"].values()]
+        release_type = _discogs_formats_to_type(formats)
+        releasegroups.append({
+            'title': release["master"].title,
+            'id': unicode(release["master"].id),
+            'url': release["master"].data.get('uri'),
+            'type': release_type,
+            'versions': release["versions"].values(),
+            'main_release_id': release["main_release_id"]
+        })
     artist_dict['releasegroups'] = releasegroups
     return artist_dict
 
@@ -427,52 +403,31 @@ def getRelease(releaseid, include_artist_info=True):
         release['artist_name'] = unicode(results['artist-credit'][0]['artist']['name'])
         release['artist_id'] = unicode(results['artist-credit'][0]['artist']['id'])
 
-    release['tracks'] = getTracksFromRelease(results)
+    release['tracks'] = get_discogs_release_tracks(results)
 
     return release
 
 
-def get_new_releases(rgid, includeExtras=False, forcefull=False):
+def get_new_releases(release_group, includeExtras=False, forcefull=False):
+    # Discogs release_group info have already been fetched, no need to call the api again
     myDB = db.DBConnection()
-    results = []
-
-    release_status = "official"
-    if includeExtras and not headphones.CONFIG.OFFICIAL_RELEASES_ONLY:
-        release_status = []
-
-    try:
-        limit = 100
-        newResults = None
-        while newResults is None or len(newResults) >= limit:
-            with discogs_lock:
-                newResults = musicbrainzngs.browse_releases(
-                    release_group=rgid,
-                    includes=['artist-credits', 'labels', 'recordings', 'release-groups', 'media'],
-                    release_status=release_status,
-                    limit=limit,
-                    offset=len(results))
-            if 'release-list' not in newResults:
-                break  # may want to raise an exception here instead ?
-            newResults = newResults['release-list']
-            results += newResults
-
-    except musicbrainzngs.WebServiceError as e:
-        logger.warn(
-            'Attempt to retrieve information from MusicBrainz for release group "%s" failed (%s)' % (
-                rgid, str(e)))
-        discogs_lock.snooze(5)
-        return False
+    results = release_group["versions"]
+    if not includeExtras or headphones.CONFIG.OFFICIAL_RELEASES_ONLY:
+        results = [r for r in results if r.status == "Accepted"]
 
     if not results or len(results) == 0:
+        logger.debug("No release with accepted status")
+        logger.debug("%s", [r.status for r in release_group["versions"]])
         return False
 
-    # Clean all references to releases in dB that are no longer referenced in musicbrainz
+    rgid = release_group["id"]
+    # Clean all references to releases in dB that are no longer referenced in discogs
     release_list = []
     force_repackage1 = 0
     if len(results) != 0:
-        for release_mark in results:
-            release_list.append(unicode(release_mark['id']))
-            release_title = release_mark['title']
+        for release in results:
+            release_list.append(unicode(release.id))
+            release_title = release.title
         remove_missing_releases = myDB.action("SELECT ReleaseID FROM allalbums WHERE AlbumID=?",
                                               [rgid])
         if remove_missing_releases:
@@ -496,57 +451,36 @@ def get_new_releases(rgid, includeExtras=False, forcefull=False):
     for releasedata in results:
 
         release = {}
-        rel_id_check = releasedata['id']
+        rel_id_check = releasedata.id
         album_checker = myDB.action('SELECT * from allalbums WHERE ReleaseID=?',
                                     [rel_id_check]).fetchone()
         if not album_checker or forcefull:
             # DELETE all references to this release since we're updating it anyway.
             myDB.action('DELETE from allalbums WHERE ReleaseID=?', [rel_id_check])
             myDB.action('DELETE from alltracks WHERE ReleaseID=?', [rel_id_check])
-            release['AlbumTitle'] = unicode(releasedata['title'])
-            release['AlbumID'] = unicode(rgid)
-            release['AlbumASIN'] = unicode(releasedata['asin']) if 'asin' in releasedata else None
-            release['ReleaseDate'] = unicode(releasedata['date']) if 'date' in releasedata else None
-            release['ReleaseID'] = releasedata['id']
-            if 'release-group' not in releasedata:
-                raise Exception('No release group associated with release id ' + releasedata[
-                    'id'] + ' album id' + rgid)
-            release['Type'] = unicode(releasedata['release-group']['type'])
-
-            if release['Type'] == 'Album' and 'secondary-type-list' in releasedata['release-group']:
-                secondary_type = unicode(releasedata['release-group']['secondary-type-list'][0])
-                if secondary_type != release['Type']:
-                    release['Type'] = secondary_type
+            release['AlbumTitle'] = releasedata.title
+            release['AlbumID'] = rgid
+            release['ReleaseDate'] = releasedata.year if releasedata.year else None
+            release['ReleaseID'] = releasedata.id
+            release['Type'] = _discogs_formats_to_type([releasedata.data["format"]])
 
             # making the assumption that the most important artist will be first in the list
-            if 'artist-credit' in releasedata:
-                release['ArtistID'] = unicode(releasedata['artist-credit'][0]['artist']['id'])
-                release['ArtistName'] = unicode(releasedata['artist-credit-phrase'])
+            if releasedata.artists:
+                release['ArtistID'] = unicode(releasedata.artists[0].id)
+                release['ArtistName'] = releasedata.artists[0].name
             else:
                 logger.warn('Release ' + releasedata['id'] + ' has no Artists associated.')
                 return False
 
-            release['ReleaseCountry'] = unicode(
-                releasedata['country']) if 'country' in releasedata else u'Unknown'
+            release['ReleaseCountry'] = releasedata.country if 'country' in releasedata.country else u'Unknown'
             # assuming that the list will contain media and that the format will be consistent
-            try:
-                additional_medium = ''
-                for position in releasedata['medium-list']:
-                    if position['format'] == releasedata['medium-list'][0]['format']:
-                        medium_count = int(position['position'])
-                    else:
-                        additional_medium = additional_medium + ' + ' + position['format']
-                if medium_count == 1:
-                    disc_number = ''
-                else:
-                    disc_number = str(medium_count) + 'x'
-                packaged_medium = disc_number + releasedata['medium-list'][0][
-                    'format'] + additional_medium
-                release['ReleaseFormat'] = unicode(packaged_medium)
-            except:
+            if releasedata.formats:
+                descriptions = [u"(%s)" % u", ".join(format['descriptions']) for format in releasedata.formats]
+                release['ReleaseFormat'] = u", ".join(descriptions)
+            else:
                 release['ReleaseFormat'] = u'Unknown'
 
-            release['Tracks'] = getTracksFromRelease(releasedata)
+            release['Tracks'] = get_discogs_release_tracks(releasedata)
 
             # What we're doing here now is first updating the allalbums & alltracks table to the most
             # current info, then moving the appropriate release into the album table and its associated
@@ -557,7 +491,7 @@ def get_new_releases(rgid, includeExtras=False, forcefull=False):
                             "ArtistName": release['ArtistName'],
                             "AlbumTitle": release['AlbumTitle'],
                             "AlbumID": release['AlbumID'],
-                            "AlbumASIN": release['AlbumASIN'],
+                            "AlbumASIN": None,
                             "ReleaseDate": release['ReleaseDate'],
                             "Type": release['Type'],
                             "ReleaseCountry": release['ReleaseCountry'],
@@ -578,7 +512,6 @@ def get_new_releases(rgid, includeExtras=False, forcefull=False):
                                 "ArtistName": release['ArtistName'],
                                 "AlbumTitle": release['AlbumTitle'],
                                 "AlbumID": release['AlbumID'],
-                                "AlbumASIN": release['AlbumASIN'],
                                 "TrackTitle": track['title'],
                                 "TrackDuration": track['duration'],
                                 "TrackNumber": track['number'],
@@ -620,24 +553,41 @@ def get_new_releases(rgid, includeExtras=False, forcefull=False):
     return num_new_releases
 
 
-def getTracksFromRelease(release):
-    totalTracks = 1
+def get_discogs_release_tracks(release):
+    track_position = 0
     tracks = []
-    for medium in release['medium-list']:
-        for track in medium['track-list']:
-            try:
-                track_title = unicode(track['title'])
-            except:
-                track_title = unicode(track['recording']['title'])
-            tracks.append({
-                'number': totalTracks,
-                'title': track_title,
-                'id': unicode(track['recording']['id']),
-                'url': u"http://musicbrainz.org/track/" + track['recording']['id'],
-                'duration': int(track['length']) if 'length' in track else 0
-            })
-            totalTracks += 1
+    for track in release.tracklist:
+        title = track.data["title"]
+        track_id = _build_discogs_track_id(title, release.id)
+        track_position += 1
+        track_data = {
+            'number': track_position,
+            'title': title,
+            'id': track_id
+        }
+        if hasattr(track, "duration"):
+            track_data["duration"] = _track_duration_from_string(track.duration)
+
+        tracks.append(track_data)
     return tracks
+
+
+def _build_discogs_track_id(track_title, release_id):
+    title_hash = unicode(hashlib.md5(track_title.encode("utf-8")).hexdigest())
+    return u"%s-%s" % (release_id, title_hash)
+
+
+def _track_duration_from_string(string_duration):
+    if not string_duration:
+        return None
+    split = string_duration.split(":")
+    length = len(split)
+    multipliers = [1, 60, 60 * 60]
+    duration = 0
+    for (i, m) in zip(range(len(multipliers)), multipliers):
+        if length > i:
+            duration += int(split[i]) * m
+    return duration
 
 
 # Used when there is a disambiguation
@@ -662,9 +612,9 @@ def findArtistbyAlbum(name):
     with discogs_lock:
         results = DISCOGS_CLIENT.search(search, criteria)
 
-    if not results.count:
+    if not results:
         return False
-    new_artist  = results[0].artists[0]
+    new_artist = results[0].artists[0]
     artist_dict = {
         "id": unicode(new_artist.id)
     }
@@ -718,3 +668,32 @@ def getArtistForReleaseGroup(rgid):
         return False
     else:
         return releaseGroup['artist-credit'][0]['artist']['name']
+
+
+DISCOGS_TYPES = [u"Album", u"EP", u"Single", u"Compilation"]
+
+
+def _discogs_formats_to_type(formats):
+    release_type = None
+    for type in DISCOGS_TYPES:
+        for format in formats:
+            if type.lower() in format.lower():
+                release_type = type
+                break
+        if release_type is not None:
+            break
+
+    if release_type is None:
+        release_type = u"Other"
+    return release_type
+
+
+def build_hybrid_release(rg, _):
+    # In the case of discogs it's the master main release
+
+    # 1. Get the main release id
+    # 2; Get the
+    version_dict = {v.id: v for v in rg["versions"]}
+    main_release = version_dict[rg["main_release_id"]]
+    tracks = get_discogs_release_tracks(main_release)
+    return {'ReleaseDate': main_release.data.get("year"), 'Tracks': tracks}

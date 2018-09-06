@@ -27,7 +27,7 @@ import os
 import cherrypy
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from headphones import versioncheck, logger
+from headphones import versioncheck, logger, mb, discogs
 import headphones.config
 from headphones.softchroot import SoftChroot
 import headphones.exceptions
@@ -676,3 +676,10 @@ def shutdown(restart=False, update=False):
         subprocess.Popen(popen_list, cwd=os.getcwd())
 
     os._exit(0)
+
+
+def get_music_db():
+    if headphones.CONFIG.MUSIC_DB == 0:
+        return mb
+    else:
+        return discogs

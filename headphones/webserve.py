@@ -62,10 +62,7 @@ def serve_template(templatename, **kwargs):
 class WebInterface(object):
     @property
     def music_db(self):
-        if headphones.CONFIG.MUSIC_DB == 0:
-            return mb
-        else:
-            return discogs
+        return headphones.get_music_db()
 
     @cherrypy.expose
     def index(self):
