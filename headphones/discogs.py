@@ -75,13 +75,10 @@ def findArtist(name, limit=1):
                 else:
                     artist_list.append(artistdict)
             else:
-                score = ratio(artist.name, name)
+                score = ratio(artist.name, name) * 100
                 image_url = "interfaces/default/images/icon_mic.png"
-                try:
-                    if artist.images:
-                        image_url = artist.images[0]['uri']
-                except HTTPError:
-                    pass
+                if artist.images:
+                    image_url = artist.images[0]['uri150']
 
                 artist_list.append({
                     'name': artist.name,
@@ -98,113 +95,69 @@ def findArtist(name, limit=1):
 
 def findRelease(name, limit=1, artist=None):
     releaselist = []
-    releaseResults = None
 
     # additional artist search
     if not artist and ':' in name:
         name, artist = name.rsplit(":", 1)
 
-    criteria = {'release': name.lower()}
+    name = name.lower()
+    query = name
     if artist:
-        criteria['artist'] = artist.lower()
+        query += artist.lower()
 
-    with discogs_lock:
-        try:
-            releaseResults = musicbrainzngs.search_releases(limit=limit, **criteria)['release-list']
-        except musicbrainzngs.WebServiceError as e:  # need to update exceptions
-            logger.warn('Attempt to query MusicBrainz for "%s" failed: %s' % (name, str(e)))
-            discogs_lock.snooze(5)
+    results = DISCOGS_CLIENT.search(query, type="release")
+    results._per_page = 100
+    page_nums = range(1, results.pages + 1)
+    release_results = []
+    for page_num in page_nums:
+        with discogs_lock:
+            page = results.page(page_num)
+        release_results += [r for r in page if r.status == u"Accepted"]
+    release_to_master = dict()
+    masters = [r for r in release_results if isinstance(r, Master)]
+    for m in masters:
+        for version_id in m.data["versions"]:
+            release_to_master[version_id] = m
+    releases_with_no_master = [r for r in release_results
+                               if not isinstance(r, Master) and r.id not in release_to_master]
+    for r in releases_with_no_master:
+        release_to_master[r.id] = r
 
-    if not releaseResults:
+    if not release_results:
+        logger.debug("Could not find any accepted release for search: '%s'", name)
         return False
 
-    for result in releaseResults:
+    if limit:
+        release_results = release_results[:limit]
 
-        title = result['title']
-        if 'disambiguation' in result:
-            title += ' (' + result['disambiguation'] + ')'
-
-        # Get formats and track counts
-        format_dict = OrderedDict()
-        formats = ''
-        tracks = ''
-        if 'medium-list' in result:
-            for medium in result['medium-list']:
-                if 'format' in medium:
-                    format = medium['format']
-                    if format not in format_dict:
-                        format_dict[format] = 0
-                    format_dict[format] += 1
-                if 'track-count' in medium:
-                    if tracks:
-                        tracks += ' + '
-                    tracks += str(medium['track-count'])
-            for format, count in format_dict.items():
-                if formats:
-                    formats += ' + '
-                if count > 1:
-                    formats += str(count) + 'x'
-                formats += format
-
-        rg_type = ''
-        if 'type' in result['release-group']:
-            rg_type = result['release-group']['type']
-            if rg_type == 'Album' and 'secondary-type-list' in result['release-group']:
-                secondary_type = result['release-group']['secondary-type-list'][0]
-                if secondary_type != rg_type:
-                    rg_type = secondary_type
-
+    for result in release_results:
+        formats = []
+        for format in result.formats:
+            formats.append(u" ".join(format.get("descriptions", [format["name"]])))
+        joined_formats = u", ".join(formats)
+        release_type = _discogs_formats_to_type(formats)
+        image_url = "interfaces/default/images/no-cover-art.png"
+        if result.images:
+            main_image = result.images[0]
+            image_url = main_image["uri150"]
         releaselist.append({
-            'uniquename': unicode(result['artist-credit'][0]['artist']['name']),
-            'title': unicode(title),
-            'id': unicode(result['artist-credit'][0]['artist']['id']),
-            'albumid': unicode(result['id']),
-            'url': unicode(
-                "http://musicbrainz.org/artist/" + result['artist-credit'][0]['artist']['id']),
-            # probably needs to be changed
-            'albumurl': unicode("http://musicbrainz.org/release/" + result['id']),
-            # probably needs to be changed
-            'score': int(result['ext:score']),
-            'date': unicode(result['date']) if 'date' in result else '',
-            'country': unicode(result['country']) if 'country' in result else '',
-            'formats': unicode(formats),
-            'tracks': unicode(tracks),
-            'rgid': unicode(result['release-group']['id']),
-            'rgtype': unicode(rg_type)
+            'uniquename': result.artists[0].name,
+            'title': result.title,
+            'id': unicode(result.artists[0].id),
+            'albumid': unicode(result.id),
+            'url': release_to_master[result.id].data.get("uri"),
+            'albumurl': result.data.get("uri"),
+            'image_url': image_url,
+            'score': ratio(name, result.title.lower()) * 100,
+            'date': result.data.get("year", u""),
+            'country': result.data.get("country", u""),
+            'formats': joined_formats,
+            'tracks': len(result.tracklist),
+            'rgid': unicode(release_to_master[result.id].id),
+            'rgtype': release_type
         })
+    releaselist = sorted(releaselist, key=lambda x: x["score"], reverse=True)
     return releaselist
-
-
-def findSeries(name, limit=1):
-    serieslist = []
-    seriesResults = None
-
-    criteria = {'series': name.lower()}
-
-    with discogs_lock:
-        try:
-            seriesResults = musicbrainzngs.search_series(limit=limit, **criteria)['series-list']
-        except musicbrainzngs.WebServiceError as e:
-            logger.warn('Attempt to query MusicBrainz for %s failed (%s)' % (name, str(e)))
-            discogs_lock.snooze(5)
-
-    if not seriesResults:
-        return False
-    for result in seriesResults:
-        if 'disambiguation' in result:
-            uniquename = unicode(result['name'] + " (" + result['disambiguation'] + ")")
-        else:
-            uniquename = unicode(result['name'])
-        serieslist.append({
-            'uniquename': uniquename,
-            'name': unicode(result['name']),
-            'type': unicode(result['type']),
-            'id': unicode(result['id']),
-            'url': unicode("http://musicbrainz.org/series/" + result['id']),
-            # probably needs to be changed
-            'score': int(result['ext:score'])
-        })
-    return serieslist
 
 
 def getArtist(artistid, extrasonly=False):
@@ -281,131 +234,63 @@ def getArtist(artistid, extrasonly=False):
     return artist_dict
 
 
-def getSeries(seriesid):
-    series_dict = {}
-    series = None
-    try:
-        with discogs_lock:
-            series = musicbrainzngs.get_series_by_id(seriesid, includes=['release-group-rels'])[
-                'series']
-    except musicbrainzngs.WebServiceError as e:
-        logger.warn(
-            'Attempt to retrieve series information from MusicBrainz failed for seriesid: %s (%s)' % (
-                seriesid, str(e)))
-        discogs_lock.snooze(5)
-    except Exception:
-        pass
-
-    if not series:
-        return False
-
-    if 'disambiguation' in series:
-        series_dict['artist_name'] = unicode(
-            series['name'] + " (" + unicode(series['disambiguation']) + ")")
-    else:
-        series_dict['artist_name'] = unicode(series['name'])
-
-    releasegroups = []
-
-    for rg in series['release_group-relation-list']:
-        releasegroup = rg['release-group']
-        releasegroups.append({
-            'title': releasegroup['title'],
-            'date': releasegroup['first-release-date'],
-            'id': releasegroup['id'],
-            'type': rg['type']
-        })
-    series_dict['releasegroups'] = releasegroups
-    return series_dict
-
-
 def getReleaseGroup(rgid):
     """
     Returns a list of releases in a release group
     """
-    releaseGroup = None
+    release_group = None
     try:
         with discogs_lock:
-            releaseGroup = musicbrainzngs.get_release_group_by_id(
-                rgid, ["artists", "releases", "media", "discids", ])
-            releaseGroup = releaseGroup['release-group']
-    except musicbrainzngs.WebServiceError as e:
+            release_group = DISCOGS_CLIENT.release(rgid)
+            master_id = release_group[]
+    except HTTPError as e:
         logger.warn(
             'Attempt to retrieve information from MusicBrainz for release group "%s" failed (%s)' % (
                 rgid, str(e)))
-        discogs_lock.snooze(5)
 
-    if not releaseGroup:
+    if not release_group:
         return False
     else:
-        return releaseGroup['release-list']
+        return release_group['release-list']
 
 
-def getRelease(releaseid, include_artist_info=True):
+def getRelease(releaseid, include_release_group_info=True):
     """
     Deep release search to get track info
     """
-    release = {}
-    results = None
+    release_dict = {}
+    release = None
 
     try:
         with discogs_lock:
-            if include_artist_info:
-                results = musicbrainzngs.get_release_by_id(releaseid,
-                                                           ["artists", "release-groups", "media",
-                                                            "recordings"]).get('release')
-            else:
-                results = musicbrainzngs.get_release_by_id(releaseid, ["media", "recordings"]).get(
-                    'release')
-    except musicbrainzngs.WebServiceError as e:
-        logger.warn(
-            'Attempt to retrieve information from MusicBrainz for release "%s" failed (%s)' % (
-                releaseid, str(e)))
-        discogs_lock.snooze(5)
-
-    if not results:
+            release = DISCOGS_CLIENT.release(releaseid)
+    except HTTPError as e:
+        logger.warn('Attempt to retrieve information from Discogs for release "%s" failed (%s)'
+                    % (releaseid, str(e)))
+    if not release:
         return False
 
-    release['title'] = unicode(results['title'])
-    release['id'] = unicode(results['id'])
-    release['asin'] = unicode(results['asin']) if 'asin' in results else None
-    release['date'] = unicode(results['date']) if 'date' in results else None
-    try:
-        release['format'] = unicode(results['medium-list'][0]['format'])
-    except:
-        release['format'] = u'Unknown'
+    release_dict['title'] = release.title
+    release_dict['id'] = unicode(release.id)
+    release_dict['date'] = release.data.get("year")
+    release_dict['format'] = release.data.get("format")
+    release_dict['country'] = release.data.get('country')
 
-    try:
-        release['country'] = unicode(results['country'])
-    except:
-        release['country'] = u'Unknown'
-
-    if include_artist_info:
-
-        if 'release-group' in results:
-            release['rgid'] = unicode(results['release-group']['id'])
-            release['rg_title'] = unicode(results['release-group']['title'])
-            try:
-                release['rg_type'] = unicode(results['release-group']['type'])
-
-                if release['rg_type'] == 'Album' and 'secondary-type-list' in results[
-                    'release-group']:
-                    secondary_type = unicode(results['release-group']['secondary-type-list'][0])
-                    if secondary_type != release['rg_type']:
-                        release['rg_type'] = secondary_type
-
-            except KeyError:
-                release['rg_type'] = u'Unknown'
-
+    if include_release_group_info:
+        if "master_id" in release.data:
+            release_dict['rgid'] = unicode(release.data["master_id"])
         else:
-            logger.warn("Release " + releaseid + "had no ReleaseGroup associated")
+            release_dict['rgid'] = unicode(release.id)
+        release_dict['rg_title'] = release.title
+        formats = []
+        for format in release.formats:
+            formats.append(u" ".join(format.get("descriptions", [format["name"]])))
+        release_dict['rg_type'] = _discogs_formats_to_type(formats)
+        release_dict['artist_name'] = release.data["artists"][0]["name"]
+        release_dict['artist_id'] = unicode(release.data["artists"][0]["id"])
 
-        release['artist_name'] = unicode(results['artist-credit'][0]['artist']['name'])
-        release['artist_id'] = unicode(results['artist-credit'][0]['artist']['id'])
-
-    release['tracks'] = get_discogs_release_tracks(results)
-
-    return release
+    release_dict['tracks'] = get_discogs_release_tracks(release)
+    return release_dict
 
 
 def get_new_releases(release_group, includeExtras=False, forcefull=False):
@@ -450,107 +335,108 @@ def get_new_releases(release_group, includeExtras=False, forcefull=False):
 
     for releasedata in results:
 
-        release = {}
-        rel_id_check = releasedata.id
-        album_checker = myDB.action('SELECT * from allalbums WHERE ReleaseID=?',
-                                    [rel_id_check]).fetchone()
-        if not album_checker or forcefull:
-            # DELETE all references to this release since we're updating it anyway.
-            myDB.action('DELETE from allalbums WHERE ReleaseID=?', [rel_id_check])
-            myDB.action('DELETE from alltracks WHERE ReleaseID=?', [rel_id_check])
-            release['AlbumTitle'] = releasedata.title
-            release['AlbumID'] = rgid
-            release['ReleaseDate'] = releasedata.year if releasedata.year else None
-            release['ReleaseID'] = releasedata.id
-            release['Type'] = _discogs_formats_to_type([releasedata.data["format"]])
 
-            # making the assumption that the most important artist will be first in the list
-            if releasedata.artists:
-                release['ArtistID'] = unicode(releasedata.artists[0].id)
-                release['ArtistName'] = releasedata.artists[0].name
-            else:
-                logger.warn('Release ' + releasedata['id'] + ' has no Artists associated.')
-                return False
+release = {}
+rel_id_check = releasedata.id
+album_checker = myDB.action('SELECT * from allalbums WHERE ReleaseID=?',
+                            [rel_id_check]).fetchone()
+if not album_checker or forcefull:
+    # DELETE all references to this release since we're updating it anyway.
+    myDB.action('DELETE from allalbums WHERE ReleaseID=?', [rel_id_check])
+    myDB.action('DELETE from alltracks WHERE ReleaseID=?', [rel_id_check])
+    release['AlbumTitle'] = releasedata.title
+    release['AlbumID'] = rgid
+    release['ReleaseDate'] = releasedata.year if releasedata.year else None
+    release['ReleaseID'] = releasedata.id
+    release['Type'] = _discogs_formats_to_type([releasedata.data["format"]])
 
-            release['ReleaseCountry'] = releasedata.country if 'country' in releasedata.country else u'Unknown'
-            # assuming that the list will contain media and that the format will be consistent
-            if releasedata.formats:
-                descriptions = [u"(%s)" % u", ".join(format['descriptions']) for format in releasedata.formats]
-                release['ReleaseFormat'] = u", ".join(descriptions)
-            else:
-                release['ReleaseFormat'] = u'Unknown'
+    # making the assumption that the most important artist will be first in the list
+    if releasedata.artists:
+        release['ArtistID'] = unicode(releasedata.artists[0].id)
+        release['ArtistName'] = releasedata.artists[0].name
+    else:
+        logger.warn('Release ' + releasedata['id'] + ' has no Artists associated.')
+        return False
 
-            release['Tracks'] = get_discogs_release_tracks(releasedata)
+    release['ReleaseCountry'] = releasedata.country if 'country' in releasedata.country else u'Unknown'
+    # assuming that the list will contain media and that the format will be consistent
+    if releasedata.formats:
+        descriptions = [u"(%s)" % u", ".join(format.get('descriptions', [format["name"]])) for format in releasedata.formats]
+        release['ReleaseFormat'] = u", ".join(descriptions)
+    else:
+        release['ReleaseFormat'] = u'Unknown'
 
-            # What we're doing here now is first updating the allalbums & alltracks table to the most
-            # current info, then moving the appropriate release into the album table and its associated
-            # tracks into the tracks table
-            controlValueDict = {"ReleaseID": release['ReleaseID']}
+    release['Tracks'] = get_discogs_release_tracks(releasedata)
 
-            newValueDict = {"ArtistID": release['ArtistID'],
-                            "ArtistName": release['ArtistName'],
-                            "AlbumTitle": release['AlbumTitle'],
-                            "AlbumID": release['AlbumID'],
-                            "AlbumASIN": None,
-                            "ReleaseDate": release['ReleaseDate'],
-                            "Type": release['Type'],
-                            "ReleaseCountry": release['ReleaseCountry'],
-                            "ReleaseFormat": release['ReleaseFormat']
-                            }
+    # What we're doing here now is first updating the allalbums & alltracks table to the most
+    # current info, then moving the appropriate release into the album table and its associated
+    # tracks into the tracks table
+    controlValueDict = {"ReleaseID": release['ReleaseID']}
 
-            myDB.upsert("allalbums", newValueDict, controlValueDict)
+    newValueDict = {"ArtistID": release['ArtistID'],
+                    "ArtistName": release['ArtistName'],
+                    "AlbumTitle": release['AlbumTitle'],
+                    "AlbumID": release['AlbumID'],
+                    "AlbumASIN": None,
+                    "ReleaseDate": release['ReleaseDate'],
+                    "Type": release['Type'],
+                    "ReleaseCountry": release['ReleaseCountry'],
+                    "ReleaseFormat": release['ReleaseFormat']
+                    }
 
-            for track in release['Tracks']:
+    myDB.upsert("allalbums", newValueDict, controlValueDict)
 
-                cleanname = helpers.clean_name(
-                    release['ArtistName'] + ' ' + release['AlbumTitle'] + ' ' + track['title'])
+    for track in release['Tracks']:
 
-                controlValueDict = {"TrackID": track['id'],
-                                    "ReleaseID": release['ReleaseID']}
+        cleanname = helpers.clean_name(
+            release['ArtistName'] + ' ' + release['AlbumTitle'] + ' ' + track['title'])
 
-                newValueDict = {"ArtistID": release['ArtistID'],
-                                "ArtistName": release['ArtistName'],
-                                "AlbumTitle": release['AlbumTitle'],
-                                "AlbumID": release['AlbumID'],
-                                "TrackTitle": track['title'],
-                                "TrackDuration": track['duration'],
-                                "TrackNumber": track['number'],
-                                "CleanName": cleanname
-                                }
+        controlValueDict = {"TrackID": track['id'],
+                            "ReleaseID": release['ReleaseID']}
 
-                match = myDB.action('SELECT Location, BitRate, Format from have WHERE CleanName=?',
-                                    [cleanname]).fetchone()
+        newValueDict = {"ArtistID": release['ArtistID'],
+                        "ArtistName": release['ArtistName'],
+                        "AlbumTitle": release['AlbumTitle'],
+                        "AlbumID": release['AlbumID'],
+                        "TrackTitle": track['title'],
+                        "TrackDuration": track['duration'],
+                        "TrackNumber": track['number'],
+                        "CleanName": cleanname
+                        }
 
-                if not match:
-                    match = myDB.action(
-                        'SELECT Location, BitRate, Format from have WHERE ArtistName LIKE ? AND AlbumTitle LIKE ? AND TrackTitle LIKE ?',
-                        [release['ArtistName'], release['AlbumTitle'], track['title']]).fetchone()
-                    # if not match:
-                    # match = myDB.action('SELECT Location, BitRate, Format from have WHERE TrackID=?', [track['id']]).fetchone()
-                if match:
-                    newValueDict['Location'] = match['Location']
-                    newValueDict['BitRate'] = match['BitRate']
-                    newValueDict['Format'] = match['Format']
-                    # myDB.action('UPDATE have SET Matched="True" WHERE Location=?', [match['Location']])
-                    myDB.action('UPDATE have SET Matched=? WHERE Location=?',
-                                (release['AlbumID'], match['Location']))
+        match = myDB.action('SELECT Location, BitRate, Format from have WHERE CleanName=?',
+                            [cleanname]).fetchone()
 
-                myDB.upsert("alltracks", newValueDict, controlValueDict)
-            num_new_releases = num_new_releases + 1
-            if album_checker:
-                logger.info('[%s] Existing release %s (%s) updated' % (
-                    release['ArtistName'], release['AlbumTitle'], rel_id_check))
-            else:
-                logger.info('[%s] New release %s (%s) added' % (
-                    release['ArtistName'], release['AlbumTitle'], rel_id_check))
-        if force_repackage1 == 1:
-            num_new_releases = -1
-            logger.info('[%s] Forcing repackage of %s, since dB releases have been removed' % (
-                release['ArtistName'], release_title))
-        else:
-            num_new_releases = num_new_releases
+        if not match:
+            match = myDB.action(
+                'SELECT Location, BitRate, Format from have WHERE ArtistName LIKE ? AND AlbumTitle LIKE ? AND TrackTitle LIKE ?',
+                [release['ArtistName'], release['AlbumTitle'], track['title']]).fetchone()
+            # if not match:
+            # match = myDB.action('SELECT Location, BitRate, Format from have WHERE TrackID=?', [track['id']]).fetchone()
+        if match:
+            newValueDict['Location'] = match['Location']
+            newValueDict['BitRate'] = match['BitRate']
+            newValueDict['Format'] = match['Format']
+            # myDB.action('UPDATE have SET Matched="True" WHERE Location=?', [match['Location']])
+            myDB.action('UPDATE have SET Matched=? WHERE Location=?',
+                        (release['AlbumID'], match['Location']))
 
-    return num_new_releases
+        myDB.upsert("alltracks", newValueDict, controlValueDict)
+    num_new_releases = num_new_releases + 1
+    if album_checker:
+        logger.info('[%s] Existing release %s (%s) updated' % (
+            release['ArtistName'], release['AlbumTitle'], rel_id_check))
+    else:
+        logger.info('[%s] New release %s (%s) added' % (
+            release['ArtistName'], release['AlbumTitle'], rel_id_check))
+if force_repackage1 == 1:
+    num_new_releases = -1
+    logger.info('[%s] Forcing repackage of %s, since dB releases have been removed' % (
+        release['ArtistName'], release_title))
+else:
+    num_new_releases = num_new_releases
+
+return num_new_releases
 
 
 def get_discogs_release_tracks(release):
@@ -697,3 +583,7 @@ def build_hybrid_release(rg, _):
     main_release = version_dict[rg["main_release_id"]]
     tracks = get_discogs_release_tracks(main_release)
     return {'ReleaseDate': main_release.data.get("year"), 'Tracks': tracks}
+
+
+def get_single_release_from_album(album_id):
+    return getRelease(album_id, include_release_group_info=True)

@@ -604,7 +604,7 @@ def addReleaseById(rid, rgid=None):
         try:
             release_dict = music_db.getRelease(rid)
         except Exception as e:
-            logger.info('Unable to get release information for Release %s: %s', rid, e)
+            logger.info('Unable to get release information for Release %s: %s\n%s', rid, e, tb.format_exc())
             if status == 'Loading':
                 myDB.action("DELETE FROM albums WHERE AlbumID=?", [rgid])
             return
@@ -673,7 +673,7 @@ def addReleaseById(rid, rgid=None):
                         "ArtistName": release_dict['artist_name'],
                         "AlbumTitle": release_dict['title'] if 'title' in release_dict else
                         release_dict['rg_title'],
-                        "AlbumASIN": release_dict['asin'],
+                        "AlbumASIN": release_dict.get('asin'),
                         "ReleaseDate": release_dict['date'],
                         "DateAdded": helpers.today(),
                         "Status": status,
@@ -695,7 +695,7 @@ def addReleaseById(rid, rgid=None):
             newValueDict = {"ArtistID": release_dict['artist_id'],
                             "ArtistName": release_dict['artist_name'],
                             "AlbumTitle": release_dict['rg_title'],
-                            "AlbumASIN": release_dict['asin'],
+                            "AlbumASIN": release_dict.get('asin'),
                             "TrackTitle": track['title'],
                             "TrackDuration": track['duration'],
                             "TrackNumber": track['number'],

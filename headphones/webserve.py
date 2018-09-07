@@ -161,9 +161,11 @@ class WebInterface(object):
         elif type == 'album':
             searchresults = self.music_db.findRelease(name, limit=100)
         elif type == 'series':
+            if headphones.CONFIG.MUSIC_DB != 0:
+                raise ValueError("You can only search for series with MusicBrainz")
             searchresults = self.music_db.findSeries(name, limit=100)
         else:
-            searchresults = discogs.findArtist(name, limit=100)
+            raise ValueError("Unknow search type %s", type)
         return serve_template(templatename="searchresults.html",
                               title='Search Results for: "' + cgi.escape(name) + '"',
                               searchresults=searchresults, name=cgi.escape(name), type=type)

@@ -13,24 +13,20 @@
 #  You should have received a copy of the GNU General Public License
 #  along with Headphones.  If not, see <http://www.gnu.org/licenses/>.
 
-import shutil
-import uuid
-import threading
 import itertools
-
 import os
 import re
+import shutil
+import threading
+import uuid
+
 import beets
-import headphones
-from beets import autotag
-from beets import config as beetsconfig
-from beets import logging as beetslogging
-from beets.mediafile import MediaFile, FileTypeError, UnreadableFileError
+from beets import autotag, config as beetsconfig, logging as beetslogging
+from beets.mediafile import FileTypeError, MediaFile, UnreadableFileError
 from beetsplug import lyrics as beetslyrics
-from headphones import notifiers, utorrent, transmission, deluge, qbittorrent
-from headphones import db, albumart, librarysync
-from headphones import logger, helpers, mb, music_encoder
-from headphones import metadata
+
+import headphones
+from headphones import albumart, db, deluge, helpers, librarysync, logger, metadata, music_encoder, notifiers, qbittorrent, transmission, utorrent
 
 postprocessor_lock = threading.Lock()
 
@@ -84,27 +80,13 @@ def verify(albumid, albumpath, Kind=None, forced=False, keep_original_folder=Fal
     release = myDB.action('SELECT * from albums WHERE AlbumID=?', [albumid]).fetchone()
     tracks = myDB.select('SELECT * from tracks WHERE AlbumID=?', [albumid])
 
+    music_db = headphones.get_music_db()
+
     if not release or not tracks:
-        release_list = None
-
-        # Fetch album information from MusicBrainz
-        try:
-            release_list = mb.getReleaseGroup(albumid)
-        except Exception as e:
-            logger.error(
-                'Unable to get release information for manual album with rgid: %s. Error: %s',
-                albumid, e)
-            return
-
-        if not release_list:
-            logger.error('Unable to get release information for manual album with rgid: %s',
-                         albumid)
-            return
+        release_dict = music_db.get_single_release_from_album(albumid)
 
         # Since we're just using this to create the bare minimum information to
         # insert an artist/album combo, use the first release
-        releaseid = release_list[0]['id']
-        release_dict = mb.getRelease(releaseid)
 
         if not release_dict:
             logger.error(
@@ -168,7 +150,7 @@ def verify(albumid, albumpath, Kind=None, forced=False, keep_original_folder=Fal
                         "ReleaseID": albumid,
                         "ArtistName": release_dict['artist_name'],
                         "AlbumTitle": release_dict['title'],
-                        "AlbumASIN": release_dict['asin'],
+                        "AlbumASIN": release_dict.get('asin'),
                         "ReleaseDate": release_dict['date'],
                         "DateAdded": helpers.today(),
                         "Type": release_dict['rg_type'],
@@ -1234,7 +1216,7 @@ def forcePostProcess(dir=None, expand_subfolders=True, album_dir=None, keep_orig
 
         if snatched:
             if headphones.CONFIG.KEEP_TORRENT_FILES and snatched['Kind'] == 'torrent' and snatched[
-                    'Status'] == 'Processed':
+                'Status'] == 'Processed':
                 logger.info(
                     '%s is a torrent folder being preserved for seeding and has already been processed. Skipping.',
                     folder_basename)

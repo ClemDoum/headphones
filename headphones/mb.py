@@ -401,9 +401,9 @@ def getSeries(seriesid):
     return series_dict
 
 
-def getReleaseGroup(rgid):
+def get_one_release_from_release_group(rgid):
     """
-    Returns a list of releases in a release group
+    Returns one release from the release group
     """
     releaseGroup = None
     try:
@@ -417,10 +417,10 @@ def getReleaseGroup(rgid):
                 rgid, str(e)))
         mb_lock.snooze(5)
 
-    if not releaseGroup:
+    if not releaseGroup or not releaseGroup['release-list']:
         return False
     else:
-        return releaseGroup['release-list']
+        return releaseGroup['release-list'][0]
 
 
 def getRelease(releaseid, include_artist_info=True):
@@ -924,4 +924,23 @@ def build_release_with_best_tracklist(releases):
                     'AlbumASIN': a[0]['asin']
                     }
 
+    return release_dict
+
+
+def get_single_release_from_album(albumid):
+    # Fetch album information from MusicBrainz
+    try:
+        release = get_one_release_from_release_group(albumid)
+    except Exception as e:
+        logger.error(
+            'Unable to get release information for manual album with rgid: %s. Error: %s',
+            albumid, e)
+        return
+
+    if not release:
+        logger.error('Unable to get release information for manual album with rgid: %s',
+                     albumid)
+        return
+    releaseid = release['id']
+    release_dict = getRelease(releaseid)
     return release_dict

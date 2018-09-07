@@ -15,7 +15,7 @@
 
 import json
 
-from headphones import db, mb, updater, importer, searcher, cache, postprocessor, versioncheck, \
+from headphones import db, updater, importer, searcher, cache, postprocessor, versioncheck, \
     logger
 import headphones
 
@@ -197,7 +197,8 @@ class Api(object):
         else:
             limit = 50
 
-        self.data = mb.findArtist(kwargs['name'], limit)
+        self.data = \
+            mb.findArtist(kwargs['name'], limit)
 
     def _findAlbum(self, **kwargs):
         if 'name' not in kwargs:
